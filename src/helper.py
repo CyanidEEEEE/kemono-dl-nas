@@ -83,23 +83,17 @@ def restrict_ascii(string:str):
 def check_date(post_date, date, datebefore, dateafter):
     if date:
         if date == post_date:
-            return 0
-        elif date > post_date:
-            return 2
+            return False
     if datebefore and dateafter:
         if dateafter <= post_date <= datebefore:
-            return 0
-        elif dateafter > post_date:
-            return 2
+            return False
     elif datebefore:
         if datebefore >= post_date:
-            return 0
+            return False
     elif dateafter:
         if dateafter <= post_date:
-            return 0
-        else:
-            return 2
-    return 1
+            return False
+    return True
 
 # prints download bar
 def print_download_bar(total:int, downloaded:int, resumed:int, start):
