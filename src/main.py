@@ -1,3 +1,5 @@
+# downloader.py
+
 import requests
 from requests.adapters import HTTPAdapter, Retry
 import re
@@ -13,6 +15,11 @@ import json
 from numbers import Number
 import pathlib
 import itertools
+import zipfile
+import py7zr
+import rarfile
+import shutil
+import hashlib
 
 from .args import get_args
 from .logger import logger
@@ -70,6 +77,16 @@ class downloader:
         self.c_fav_posts = args['coomer_fav_posts']
         self.k_fav_users = args['kemono_fav_users']
         self.c_fav_users = args['coomer_fav_users']
+        
+        # --- 我们的修改与整合 ---
+        # 假设 auto_extract 总是开启，并从 args 获取相关参数
+        # 注意: 您需要确保在 args.py 中添加了 'delete_extracted_types' 和 'clear_failed_marks' 参数
+        self.auto_extract = True 
+        self.delete_extracted_types = args.get('delete_extracted_types', []) # 使用 .get() 避免KeyError
+        self.clear_failed = args.get('clear_failed_marks', False) # 使用 .get() 避免KeyError
+        self.hash_filename = '.extracted_hash'
+        # --- 修改结束 ---
+
         self.icon_banner = []
         if args['icon']:
             self.icon_banner.append('icon')
@@ -208,18 +225,18 @@ class downloader:
                 if response.status_code == 429:
                     logger.warning(f"Failed to request user json from: {api}?o={chunk} | 429 Too Many Requests | All retries failed")
                     return
-            json = response.json()
-            if not json:
+            json_data = response.json()
+            if not json_data:
                 if is_post:
                     logger.error(f"Unable to find post json for {api}")
                 elif chunk == 0:
                     logger.error(f"Unable to find user json for {api}?o={chunk}")
                 return # completed
-            if is_post and isinstance(json, dict) and json.get('post'):
-                json = json.get('post')
-            if not isinstance(json,list):
-                json=[json]
-            for post in json:
+            if is_post and isinstance(json_data, dict) and json_data.get('post'):
+                json_data = json_data.get('post')
+            if not isinstance(json_data,list):
+                json_data=[json_data]
+            for post in json_data:
                 # only download once
                 if not is_post and first:
                     try:
@@ -261,7 +278,7 @@ class downloader:
                     logger.exception("Unable to download post | service:{service} user_id:{user_id} post_id:{id}".format(**post['post_variables']))
                 self.comp_posts.append("https://{site}/{service}/user/{user_id}/post/{id}".format(**post['post_variables']))
             chunk_size = 50
-            if len(json) < chunk_size:
+            if len(json_data) < chunk_size:
                 return # completed
             chunk += chunk_size
 
@@ -309,11 +326,11 @@ class downloader:
                 logger.warning("Unable to download DMs for {service} {user_id} | 429 | All retries failed".format(**post['post_variables']))
                 return
             else:
-                logger.warning("Unable to download DMs for {service} {user_id} | {code} | Retrying.".format(core=response.status_code,**post['post_variables']))
+                logger.warning("Unable to download DMs for {service} {user_id} | {code} | Retrying.".format(code=response.status_code,**post['post_variables']))
             if retry > 0:
                 self.write_dms(post=post,retry=retry-1)
             else:
-                logger.error("Unable to download DMs for {service} {user_id} | {code} | All retries failed.".format(core=response.status_code,**post['post_variables']))
+                logger.error("Unable to download DMs for {service} {user_id} | {code} | All retries failed.".format(code=response.status_code,**post['post_variables']))
             return
         page_json = response.json()
         if page_json.get('props') is None or page_json.get('props').get('dm_count') < 1:
@@ -341,11 +358,11 @@ class downloader:
                 logger.warning("Unable to find Fancards for {service} {user_id} | 429 | All retries failed".format(**post['post_variables']))
                 return
             else:
-                logger.warning("Unable to find Fancards for {service} {user_id} | {code} | Retrying.".format(core=response.status_code,**post['post_variables']))
+                logger.warning("Unable to find Fancards for {service} {user_id} | {code} | Retrying.".format(code=response.status_code,**post['post_variables']))
             if retry > 0:
                 self.download_fancards(post=post,retry=retry-1)
             else:
-                logger.error("Unable to find Fancards for {service} {user_id} | {code} | All retries failed.".format(core=response.status_code,**post['post_variables']))
+                logger.error("Unable to find Fancards for {service} {user_id} | {code} | All retries failed.".format(code=response.status_code,**post['post_variables']))
             return
         page_json = response.json()
         fancards_json = page_json if isinstance(page_json, list) else [page_json]
@@ -376,11 +393,11 @@ class downloader:
                 logger.warning("Unable to get announcements for {service} {user_id} | 429 | All retries failed".format(**post['post_variables']))
                 return
             else:
-                logger.warning("Unable to get announcements for {service} {user_id} | {code} | Retrying.".format(core=response.status_code,**post['post_variables']))
+                logger.warning("Unable to get announcements for {service} {user_id} | {code} | Retrying.".format(code=response.status_code,**post['post_variables']))
             if retry > 0:
                 self.write_announcements(post=post,retry=retry-1)
             else:
-                logger.error("Unable to get announcements for {service} {user_id} | {code} | All retries failed.".format(core=response.status_code,**post['post_variables']))
+                logger.error("Unable to get announcements for {service} {user_id} | {code} | All retries failed.".format(code=response.status_code,**post['post_variables']))
             return
         if not len(response.json()):
             logger.info("No announcements found for https://{site}/{service}/user/{user_id}".format(**post['post_variables']))
@@ -407,7 +424,7 @@ class downloader:
     def get_inline_images(self, post, content_soup):
         # only get images that are hosted by the .party site
         inline_images = [inline_image for inline_image in content_soup.find_all("img") 
-                            if inline_image.get('src') and inline_image.get('src')[0] == '/']
+                            if inline_image.get('src') and inline_image.get('src').startswith('/data/')]
         for index, inline_image in enumerate(inline_images):
             file = {}
             filename, file_extension = os.path.splitext(inline_image['src'].rsplit('/')[-1])
@@ -416,7 +433,7 @@ class downloader:
             file['file_variables'] = {
                 'filename': filename,
                 'ext': file_extension[1:],
-                'url': f"https://{post['post_variables']['site']}/data{inline_image['src']}",
+                'url': f"https://{post['post_variables']['site']}{inline_image['src']}",
                 'hash': file_hash,
                 'index': f"{index + 1}".zfill(len(str(len(inline_images)))),
                 'referer': f"https://{post['post_variables']['site']}/{post['post_variables']['service']}/user/{post['post_variables']['user_id']}/post/{post['post_variables']['id']}"
@@ -482,19 +499,19 @@ class downloader:
         new_post['post_variables']['username'] = user['name']
         new_post['post_variables']['site'] = domain
         new_post['post_variables']['service'] = post['service']
-        new_post['post_variables']['added'] = self.format_time_by_type(post['added']) if post['added'] else None
-        new_post['post_variables']['updated'] = self.format_time_by_type(post['edited']) if post['edited'] else None
-        new_post['post_variables']['user_updated'] = self.format_time_by_type(user['updated']) if user['updated'] else None
-        new_post['post_variables']['published'] = self.format_time_by_type(post['published']) if post['published'] else None
-        new_post['post_variables']['tags'] = post['tags']
-        new_post['post_variables']['poll'] = post['poll']
+        new_post['post_variables']['added'] = self.format_time_by_type(post['added']) if post.get('added') else None
+        new_post['post_variables']['updated'] = self.format_time_by_type(post.get('edited')) if post.get('edited') else None
+        new_post['post_variables']['user_updated'] = self.format_time_by_type(user.get('updated')) if user.get('updated') else None
+        new_post['post_variables']['published'] = self.format_time_by_type(post.get('published')) if post.get('published') else None
+        new_post['post_variables']['tags'] = post.get('tags')
+        new_post['post_variables']['poll'] = post.get('poll')
 
         new_post['post_path'] = compile_post_path(new_post['post_variables'], self.download_path_template, self.restrict_ascii)
 
         new_post['attachments'] = []
-        if self.attachments:
+        if self.attachments and post.get('attachments'):
             # add post file to front of attachments list if it doesn't already exist
-            if post['file'] and not post['file'] in post['attachments']:
+            if post.get('file') and not post['file'] in post['attachments']:
                 post['attachments'].insert(0, post['file'])
             # loop over attachments and set file variables
             for index, attachment in enumerate(post['attachments']):
@@ -510,7 +527,7 @@ class downloader:
                 file['file_variables'] = {
                     'filename': filename,
                     'ext': file_extension[1:],
-                    'url': f"https://{domain}/data{attachment['path']}",
+                    'url': f"https://{domain}{attachment['path']}" if attachment['path'].startswith('/data/') else f"https://{domain}/data{attachment['path']}",
                     'hash': file_hash,
                     'index': f"{index + 1}".zfill(len(str(len(post['attachments'])))),
                     'referer': f"https://{domain}/{post['service']}/user/{post['user']}/post/{post['id']}"
@@ -519,19 +536,19 @@ class downloader:
                 new_post['attachments'].append(file)
 
         new_post['inline_images'] = []
-        content_soup = BeautifulSoup(post['content'], 'html.parser')
+        content_soup = BeautifulSoup(post.get('content',''), 'html.parser')
         if self.inline:
             content_soup = self.get_inline_images(new_post, content_soup)
 
         comment_soup = ''
 
         new_post['content'] = {'text':None,'file_variables':None, 'file_path':None}
-        embed = "{subject}\n{url}\n{description}".format(**post['embed']) if post['embed'] else ''
-        if (self.content or self.comments) and (content_soup or comment_soup or embed):
+        embed = "{subject}\n{url}\n{description}".format(**post['embed']) if post.get('embed') else ''
+        if (self.content or self.comments) and (content_soup.renderContents() or comment_soup or embed):
             self.compile_post_content(new_post, content_soup.prettify(), comment_soup, embed)
 
         new_post['links'] = {'text':None,'file_variables':None, 'file_path':None}
-        embed_url = "{url}\n".format(**post['embed']) if post['embed'] else ''
+        embed_url = "{url}\n".format(**post['embed']) if post.get('embed') else ''
         if self.extract_links or self.extract_all_links:
             self.compile_content_links(new_post, content_soup, embed_url)
 
@@ -719,7 +736,7 @@ class downloader:
         if response.status_code == 416:
             logger.warning(f"Failed to download: {file['file_variables']['url']} | 416 Range Not Satisfiable | Assuming broken server hash value")
             content_length = self.session.get(url=file['file_variables']['url'], stream=True, headers=self.headers, cookies=self.cookies, timeout=self.timeout).headers.get('content-length', '')
-            if int(content_length) == resume_size:
+            if content_length and int(content_length) == resume_size:
                 logger.debug("Correct amount of bytes downloaded | Assuming download completed successfully")
                 if self.overwrite:
                     os.replace(part_file, file['file_path'])
@@ -727,7 +744,6 @@ class downloader:
                     os.rename(part_file, file['file_path'])
                 return
             logger.error("Incorrect amount of bytes downloaded | Something went so wrong I have no idea what happened | Saving file with suffix in name")
-            # os.remove(part_file)
             filepath=os.path.splitext(file['file_path'])
             filepath=filepath[0]+'_statuscode416'+filepath[1]
             if self.overwrite:
@@ -779,7 +795,6 @@ class downloader:
                         puff = bytes()
                 print()
             except Exception as exc:
-                # assuming puffered content is good
                 with open(part_file, 'ab') as f:
                     f.write(puff)
                     puff = bytes()
@@ -791,7 +806,6 @@ class downloader:
                 self.post_errors += 1
                 return
 
-            # verify download
             local_hash = get_file_hash(part_file)
             logger.debug(f"Local File hash: {local_hash}")
             logger.debug(f"Sever File hash: {file['file_variables']['hash']}")
@@ -815,11 +829,17 @@ class downloader:
                     else:
                         os.rename(part_file, filepath)
                     return
-            # remove .part from file name
+
             if self.overwrite:
                 os.replace(part_file, file['file_path'])
             else:
                 os.rename(part_file, file['file_path'])
+            
+            # --- 我们的修改与整合 ---
+            # 成功下载后，调用智能解压
+            if self.auto_extract and file['file_variables']['ext'].lower() in ['zip', '7z', 'rar']:
+                self.extract_archive(file['file_path'], file['file_variables']['hash'], is_new_download=True)
+            # --- 修改结束 ---
 
     def download_yt_dlp(self, post:dict):
         # download from video streaming site
@@ -830,12 +850,12 @@ class downloader:
     def load_archive(self):
         # load archived posts
         if self.archive_file and os.path.exists(self.archive_file):
-            with open(self.archive_file,'r') as f:
+            with open(self.archive_file,'r', encoding='utf-8') as f:
                 self.archive_list = f.read().splitlines()
 
     def write_archive(self, post:dict):
         if self.archive_file and self.post_errors == 0 and not self.simulate:
-            with open(self.archive_file,'a') as f:
+            with open(self.archive_file,'a', encoding='utf-8') as f:
                 f.write("https://{site}/{service}/user/{user_id}/post/{id}".format(**post['post_variables']) + '\n')
 
     def skip_user(self, user:dict):
@@ -887,7 +907,23 @@ class downloader:
         return False
 
     def skip_file(self, file:dict, post:dict):
-        # check if file exists
+        # --- 我们的修改与整合 ---
+        # 优先检查是否是已被解压过的压缩包
+        if self.auto_extract and file['file_variables']['ext'].lower() in ['zip', '7z', 'rar']:
+            extract_dir = os.path.dirname(file['file_path'])
+            hash_file = os.path.join(extract_dir, self.hash_filename)
+            if os.path.exists(hash_file):
+                try:
+                    with open(hash_file, 'r', encoding='utf-8') as f:
+                        hash_data = json.load(f)
+                        if file['file_variables']['hash'] in hash_data:
+                            logger.info(f"跳过下载: {os.path.split(file['file_path'])[1]} | 压缩包已被解压过")
+                            return True
+                except:
+                    pass
+        # --- 修改结束 ---
+
+        # check if file exists (保留原作者的最新逻辑)
         if not self.overwrite:
             if os.path.exists(file['file_path']):
                 confirm_msg = ''
@@ -947,28 +983,193 @@ class downloader:
 
         # check file size
         if self.min_size or self.max_size:
-            file_size = requests.get(file['file_variables']['url'], cookies=self.cookies, stream=True,proxies=self.proxies).headers.get('content-length', 0)
-            if int(file_size) == 0:
-                    logger.info(f"Skipping: {os.path.split(file['file_path'])[1]} | File size not included in file header")
-                    return True
-            if self.min_size and self.max_size:
-                if not (self.min_size <= int(file_size) <= self.max_size):
-                    logger.info(f"Skipping: {os.path.split(file['file_path'])[1]} | File size in bytes {file_size} was not between {self.min_size} and {self.max_size}")
-                    return True
-            elif self.min_size:
-                if not (self.min_size <= int(file_size)):
-                    logger.info(f"Skipping: {os.path.split(file['file_path'])[1]} | File size in bytes {file_size} was not >= {self.min_size}")
-                    return True
-            elif self.max_size:
-                if not (int(file_size) <= self.max_size):
-                    logger.info(f"Skipping: {os.path.split(file['file_path'])[1]} | File size in bytes {file_size} was not <= {self.max_size}")
-                    return True
+            file_size_req = self.session.get(file['file_variables']['url'], stream=True)
+            if file_size_req.status_code == 200:
+                file_size = file_size_req.headers.get('content-length', 0)
+                if int(file_size) == 0:
+                        logger.info(f"Skipping: {os.path.split(file['file_path'])[1]} | File size not included in file header")
+                elif self.min_size and self.max_size:
+                    if not (self.min_size <= int(file_size) <= self.max_size):
+                        logger.info(f"Skipping: {os.path.split(file['file_path'])[1]} | File size in bytes {file_size} was not between {self.min_size} and {self.max_size}")
+                        return True
+                elif self.min_size:
+                    if not (self.min_size <= int(file_size)):
+                        logger.info(f"Skipping: {os.path.split(file['file_path'])[1]} | File size in bytes {file_size} was not >= {self.min_size}")
+                        return True
+                elif self.max_size:
+                    if not (int(file_size) <= self.max_size):
+                        logger.info(f"Skipping: {os.path.split(file['file_path'])[1]} | File size in bytes {file_size} was not <= {self.max_size}")
+                        return True
+            else:
+                logger.warning(f"Unable to check file size for {os.path.split(file['file_path'])[1]} | Status code: {file_size_req.status_code}")
         return False
 
+    # --- 我们的修改与整合 ---
+    # 重新添加我们的智能解压方法
+    def extract_archive(self, archive_path, hash_value, is_new_download=False):
+        """解压缩文件，并按顺序自动尝试多种压缩格式，然后保存hash信息"""
+        try:
+            base_dir = os.path.dirname(archive_path)
+            file_name = os.path.splitext(os.path.basename(archive_path))[0].strip()
+            extract_dir = os.path.join(base_dir, file_name)
+            file_ext = os.path.splitext(archive_path)[1].lower()
+            
+            fail_mark = os.path.join(base_dir, f"{file_name}.extract_failed")
+            if is_new_download and os.path.exists(fail_mark):
+                logger.info(f"跳过: {os.path.basename(archive_path)} | 之前多次下载解压均失败已标记")
+                return False
+            
+            if not os.path.exists(extract_dir):
+                os.makedirs(extract_dir)
+
+            def _try_extract_zip(path, dest):
+                with zipfile.ZipFile(path, 'r') as zip_ref:
+                    for member in zip_ref.infolist():
+                        try:
+                            zip_ref.extract(member, dest)
+                        except zipfile.BadZipFile as e:
+                            raise e # Re-raise to be caught as a format error
+                        except Exception:
+                            # Handle problematic filenames
+                            new_name = member.filename.encode('cp437').decode('gbk', 'ignore')
+                            if new_name != member.filename:
+                                member.filename = new_name
+                                zip_ref.extract(member, dest)
+
+            def _try_extract_rar(path, dest):
+                with rarfile.RarFile(path, 'r') as rar_ref:
+                    rar_ref.extractall(dest)
+
+            def _try_extract_7z(path, dest):
+                with py7zr.SevenZipFile(path, 'r') as sz_ref:
+                    sz_ref.extractall(dest)
+
+            extractors = {
+                'zip': (_try_extract_zip, zipfile.BadZipFile),
+                'rar': (_try_extract_rar, (rarfile.NotRarFile, rarfile.BadRarFile)),
+                '7z': (_try_extract_7z, py7zr.exceptions.Bad7zFile if hasattr(py7zr, 'exceptions') else Exception)
+            }
+            
+            ext_key = file_ext.lstrip('.')
+            attempt_order = [ext_key] + [k for k in extractors if k != ext_key] if ext_key in extractors else list(extractors.keys())
+
+            extracted_successfully = False
+            last_exception = None
+
+            for format_key in attempt_order:
+                extractor_func, format_exception_types = extractors[format_key]
+                try:
+                    logger.info(f"正在尝试作为 {format_key.upper()} 格式解压: {os.path.basename(archive_path)}")
+                    extractor_func(archive_path, extract_dir)
+                    logger.info(f"成功作为 {format_key.upper()} 格式解压。")
+                    extracted_successfully = True
+                    break
+                except format_exception_types as e:
+                    logger.warning(f"作为 {format_key.upper()} 格式解压失败: {str(e)}")
+                    last_exception = e
+                    continue
+                except (RuntimeError, rarfile.BadRarFile) as e:
+                    if "encrypted" in str(e).lower() or "password" in str(e).lower():
+                        logger.info(f"跳过加密的压缩文件: {os.path.basename(archive_path)}")
+                        if os.path.exists(extract_dir) and not os.listdir(extract_dir):
+                            try: os.rmdir(extract_dir)
+                            except: pass
+                        return False
+                    logger.warning(f"作为 {format_key.upper()} 格式解压时遇到运行时错误: {str(e)}")
+                    last_exception = e
+                    continue
+            
+            if not extracted_successfully:
+                raise last_exception or Exception("无法解压文件，已尝试所有支持的格式。")
+
+            hash_file = os.path.join(base_dir, self.hash_filename)
+            try:
+                with open(hash_file, 'r', encoding='utf-8') as f:
+                    hash_data = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                hash_data = {}
+            
+            hash_data[hash_value] = file_name
+            with open(hash_file, 'w', encoding='utf-8') as f:
+                json.dump(hash_data, f, indent=2, ensure_ascii=False)
+
+            os.remove(archive_path)
+            logger.info(f"成功解压到 {file_name} 并删除: {os.path.basename(archive_path)}")
+
+            if self.delete_extracted_types:
+                for root, _, files in os.walk(extract_dir):
+                    for file in files:
+                        ext = os.path.splitext(file)[1].lower().lstrip('.')
+                        if ext in self.delete_extracted_types:
+                            try:
+                                os.remove(os.path.join(root, file))
+                                logger.info(f"删除指定类型文件: {file}")
+                            except Exception as e:
+                                logger.warning(f"删除文件 {file} 失败: {str(e)}")
+            return True
+
+        except Exception as e:
+            logger.error(f"解压失败 {os.path.basename(archive_path)}: {str(e)}")
+            if not is_new_download:
+                if os.path.exists(archive_path): os.remove(archive_path)
+                logger.info(f"本地压缩文件解压失败，已删除: {os.path.basename(archive_path)}")
+            else:
+                retry_file = os.path.join(base_dir, f"{file_name}.retry_count")
+                try: retry_count = int(open(retry_file, 'r').read().strip()) if os.path.exists(retry_file) else 0
+                except: retry_count = 0
+                
+                retry_count += 1
+                if retry_count >= 3:
+                    with open(fail_mark, 'w') as f: f.write(f"Failed at {datetime.datetime.now()}: {str(e)}")
+                    if os.path.exists(retry_file): os.remove(retry_file)
+                    logger.error(f"文件 {os.path.basename(archive_path)} 已尝试3次下载解压均失败，已标记为永久跳过")
+                else:
+                    with open(retry_file, 'w') as f: f.write(str(retry_count))
+                    logger.warning(f"文件 {os.path.basename(archive_path)} 下载解压失败第{retry_count}次，将重试下载")
+                    if "encrypted" not in str(e).lower() and "password" not in str(e).lower():
+                        if os.path.exists(archive_path): os.remove(archive_path)
+            
+            if 'extract_dir' in locals() and os.path.exists(extract_dir):
+                try:
+                    if not os.listdir(extract_dir): os.rmdir(extract_dir)
+                except: pass
+            return False
+
+    def process_existing_archives(self, directory):
+        """处理目录中已存在的压缩文件"""
+        for root, _, files in os.walk(directory):
+            for file in files:
+                if file.lower().endswith(('.zip', '.7z', '.rar')):
+                    archive_path = os.path.join(root, file)
+                    hash_value = get_file_hash(archive_path)
+                    self.extract_archive(archive_path, hash_value, is_new_download=False)
+
+    def clear_failed_marks(self, directory):
+        """清除所有永久跳过标记"""
+        count = 0
+        for root, _, files in os.walk(directory):
+            for file in files:
+                if file.endswith('.extract_failed'):
+                    try:
+                        os.remove(os.path.join(root, file))
+                        count += 1
+                    except: pass
+        if count > 0:
+            logger.info(f"已清除 {count} 个永久跳过标记")
+    # --- 修改结束 ---
 
 
     def start_download(self):
-        # start the download process
+        # --- 我们的修改与整合 ---
+        if self.clear_failed:
+            logger.info("清除永久跳过标记...")
+            self.clear_failed_marks(os.getcwd())
+        
+        if self.auto_extract:
+            logger.info("正在检查并处理已存在的压缩文件...")
+            self.process_existing_archives(os.getcwd())
+        # --- 修改结束 ---
+
         self.load_archive()
 
         urls = []
@@ -1038,7 +1239,7 @@ class downloader:
                     t = datetime.datetime.strptime(time, r'%Y%m%d')
             else:
                 t = datetime.datetime.strptime(time, date_format)
-        elif time == None:
+        elif time is None:
             return None
         else:
             raise Exception(f'Can not format time {time}')
@@ -1046,7 +1247,7 @@ class downloader:
                 
     def format_time_by_type(self, time):
         t = self.get_date_by_type(time)
-        return t.strftime(self.date_strf_pattern) if t != None else t
+        return t.strftime(self.date_strf_pattern) if t is not None else None
 
 def main():
     downloader(get_args())
