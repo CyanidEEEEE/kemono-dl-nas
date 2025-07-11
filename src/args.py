@@ -1,7 +1,10 @@
+# args.py
+
 import os
 import datetime
 import re
 import argparse
+import sys
 from http.cookiejar import MozillaCookieJar, LoadError
 from urllib.parse import urlparse, urlunparse
 
@@ -9,7 +12,27 @@ from .version import __version__
 
 def get_args():
 
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter,
+        description="""
+Downloader for kemono.party/coomer.party.
+See https://github.com/GaT-K/party-downloader-fork for more info.
+Output Patterns Help:
+    {service}               - The service the user is on (patreon, fanbox, etc)
+    {username}              - The name of the user
+    {user_id}               - The id of the user
+    {site}                  - The site the user is on (kemono, coomer)
+    {title}                 - The title of the post
+    {id}                    - The id of the post
+    {published}             - The date the post was published
+    {updated}               - The date the post was last updated
+    {added}                 - The date the post was added to the site
+    {user_updated}          - The date the user was last updated
+    {filename}              - The original name of the file
+    {ext}                   - The file extention of the file
+    {index}                 - The index of the file in the post
+    {hash}                  - The md5 hash of the file
+        """
+    )
 
     ap.add_argument("--cookies",
                     metavar="FILE", type=str, default=None,
@@ -96,27 +119,27 @@ def get_args():
 
     ap.add_argument("--dirname-pattern",
                     metavar="DIRNAME_PATTERN", type=str, default='Downloads/{service}/{username} [{user_id}]',
-                    help="Set the file path pattern for where files are downloaded. See Output Patterns for more detail.")
+                    help="Set the file path pattern for where files are downloaded. (default: Downloads/{service}/{username} [{user_id}])")
 
     ap.add_argument("--filename-pattern",
                     metavar="FILENAME_PATTERN", type=str, default='[{published}] [{id}] {title}/{index}_{filename}.{ext}',
-                    help="Set the file name pattern for attachments. See Output Patterns for more detail.")
+                    help="Set the file name pattern for attachments. (default: [{published}] [{id}] {title}/{index}_{filename}.{ext})")
 
     ap.add_argument("--inline-filename-pattern",
                     metavar="INLINE_FILENAME_PATTERN", type=str, default='[{published}] [{id}] {title}/inline/{index}_{filename}.{ext}',
-                    help="Set the file name pattern for inline images. See Output Patterns for more detail.")
+                    help="Set the file name pattern for inline images. (default: [{published}] [{id}] {title}/inline/{index}_{filename}.{ext})")
 
     ap.add_argument("--other-filename-pattern",
                     metavar="OTHER_FILENAME_PATTERN", type=str, default='[{published}] [{id}] {title}/[{id}]_{filename}.{ext}',
-                    help="Set the file name pattern for post content, extracted links, and json. See Output Patterns for more detail.")
+                    help="Set the file name pattern for post content, extracted links, and json. (default: [{published}] [{id}] {title}/[{id}]_{filename}.{ext})")
 
     ap.add_argument("--user-filename-pattern",
                     metavar="USER_FILENAME_PATTERN", type=str, default='[{user_id}]_{filename}.{ext}',
-                    help="Set the file name pattern for icon, banner and dms. See Output Patterns for more detail.")
+                    help="Set the file name pattern for icon, banner and dms. (default: [{user_id}]_{filename}.{ext})")
 
     ap.add_argument("--date-strf-pattern",
                     metavar="DATE_STRF_PATTERN", type=str, default='%Y%m%d',
-                    help="Set the date strf pattern variable. See Output Patterns for more detail.")
+                    help="Set the date strf pattern variable. (default: %%Y%%m%%d)")
 
     ap.add_argument("--restrict-names",
                     action='store_true', default=False,
@@ -150,19 +173,19 @@ def get_args():
 
     ap.add_argument("--min-filesize",
                     metavar="SIZE", type=str, default=None,
-                    help="Only download attachments or inline images with greater than this file size. (ex #gb | #mb | #kb | #b)")
+                    help="Only download attachments or inline images with greater than this file size. (ex: 1gb, 500mb, 100kb, 10b)")
 
     ap.add_argument("--max-filesize",
                     metavar="SIZE", type=str, default=None,
-                    help="Only download attachments or inline images with less than this file size. (ex #gb | #mb | #kb | #b)")
+                    help="Only download attachments or inline images with less than this file size. (ex: 1gb, 500mb, 100kb, 10b)")
 
     ap.add_argument("--only-filetypes",
                     metavar="EXT", type=str, default=[],
-                    help="Only download attachments or inline images with the given file type(s). Takes a file extensions or list of file extensions separated by a comma. (ex mp4,jpg,gif,zip)")
+                    help="Only download attachments or inline images with the given file type(s). Takes a file extensions or list of file extensions separated by a comma. (ex: mp4,jpg,gif,zip)")
 
     ap.add_argument("--skip-filetypes",
                     metavar="EXT", type=str, default=[],
-                    help="Only download attachments or inline images without the given file type(s). Takes a file extensions or list of file extensions separated by a comma. (ex mp4,jpg,gif,zip)")
+                    help="Only download attachments or inline images without the given file type(s). Takes a file extensions or list of file extensions separated by a comma. (ex: mp4,jpg,gif,zip)")
 
     ap.add_argument("--only-postname",
                     metavar="postname", type=str, default=[],
@@ -230,11 +253,11 @@ def get_args():
 
     ap.add_argument("--local-hash",
                     action=argparse.BooleanOptionalAction, default=False,
-                    help='Check hash before skip downloading local exist files')
+                    help='Check hash before skip downloading local exist files (default: False)')
 
     ap.add_argument("--dupe-check",
                     action=argparse.BooleanOptionalAction, default=True,
-                    help='Simple similar filename file search and hash compare to prevent duplicate downloads')
+                    help='Simple similar filename file search and hash compare to prevent duplicate downloads (default: True)')
     
     ap.add_argument("--dupe-check-pattern",
                     metavar="DUPE_CHECK_PATTERN", type=str, default="{index}_*,*{id}*/{index}_*",
@@ -242,7 +265,7 @@ def get_args():
 
     ap.add_argument("--force-unlisted",
                     action=argparse.BooleanOptionalAction, default=False,
-                    help='Request user api without obtaining all creators list. Potential use case: the user is unlisted or the creators list api is down. Username will be unavailable and replaced by user id. Use carefully.')
+                    help='Request user api without obtaining all creators list. Potential use case: the user is unlisted or the creators list api is down. Username will be unavailable and replaced by user id. Use carefully. (default: False)')
 
     ap.add_argument("--retry-403",
                     metavar='COUNT', type=int, default=0,
@@ -250,23 +273,23 @@ def get_args():
 
     ap.add_argument("--fp-added",
                     action=argparse.BooleanOptionalAction, default=False,
-                    help='Filter posts by added date instead of published date. Override behavior of --date --dateafter --datebefore.')
+                    help='Filter posts by added date instead of published date. Override behavior of --date --dateafter --datebefore. (default: False)')
     
     ap.add_argument("--fancards",
                     action=argparse.BooleanOptionalAction, default=False,
-                    help='Download Fancards.')
+                    help='Download Fancards. (default: False)')
 
     ap.add_argument("--cccp",
                     action=argparse.BooleanOptionalAction, default=False,
-                    help='Change all input links (--links and --from-file) to .su domain links.')
+                    help='Change all input links (--links and --from-file) to .su domain links. (default: False)')
 
     ap.add_argument("--announcements",
                     action=argparse.BooleanOptionalAction, default=False,
-                    help="Download announcements (always overwrite if site return more content than local one). Only works when a user url is passed.")
+                    help="Download announcements (always overwrite if site return more content than local one). Only works when a user url is passed. (default: False)")
 
     ap.add_argument("--head-check",
                     action=argparse.BooleanOptionalAction, default=False,
-                    help="Check some first bytes of downloaded content with a separate request to fail quick if weird thing happend.")
+                    help="Check some first bytes of downloaded content with a separate request to fail quick if weird thing happend. (default: False)")
     
     ap.add_argument("--proxy-agent",
                     metavar="https://agent/proxy", type=str, default=None,
@@ -279,20 +302,26 @@ def get_args():
     
     ap.add_argument("--archives-password",
                     action=argparse.BooleanOptionalAction, default=False,
-                    help="Try look for passwords of archived files (zip, 7z, rar), the password will be stored in \".pw\" file in the same place of the archive if found.")
-
+                    help="Try look for passwords of archived files (zip, 7z, rar), the password will be stored in \".pw\" file in the same place of the archive if found. (default: False)")
+    
+    # --- 我们的修改与整合 ---
+    # 重新添加我们的自定义参数
     ap.add_argument("--delete-extracted-types",
                     metavar="EXT", type=str, default=[],
                     help="删除解压后的指定类型文件，多个类型用逗号分隔 (例如: txt,url)")
 
     ap.add_argument("--clear-failed-marks",
-                    action='store_true',
+                    action='store_true', default=False,
                     help='清除所有永久跳过标记，重新尝试下载和解压')
+    # --- 修改结束 ---
 
+    if len(sys.argv) < 2:
+        ap.print_usage()
+        sys.exit(1)
     args = vars(ap.parse_args())
     args['cookie_domains'] = {'kemono': None, 'coomer': None}
 
-    # takes a comma seperated lost of cookie files and loads them into a cookie jar
+    # takes a comma seperated list of cookie files and loads them into a cookie jar
     if args['cookies']:
         cookie_files = [s.strip() for s in args["cookies"].split(",")]
         args['cookies'] = MozillaCookieJar()
@@ -300,14 +329,14 @@ def get_args():
         loaded = 0
         for cookie_file in cookie_files:
             try:
-                loaded_cookies.load(cookie_file)
+                loaded_cookies.load(cookie_file, ignore_discard=True, ignore_expires=True)
                 loaded += 1
             except LoadError:
                 print(F"Unable to load cookie {cookie_file}")
             except FileNotFoundError:
                 print(F"Unable to find cookie {cookie_file}")
         if loaded == 0:
-            print("No cookies loaded | exiting"), exit()
+            print("No cookies loaded | exiting"), sys.exit()
         # make sure cookies are wildcard for better compatibility
         for cookie in loaded_cookies:
             args['cookie_domains']['kemono'] = args['cookie_domains']['kemono'] or (
@@ -327,7 +356,7 @@ def get_args():
 
     if (not args['cookie_domains']['kemono'] and (args['kemono_fav_users'] or args['kemono_fav_posts'])) or (
         not args['cookie_domains']['coomer'] and (args['coomer_fav_users'] or args['coomer_fav_posts'])):
-        print(f"Bad cookie file | Unable to detect domain when download favorites"), exit()
+        print(f"Bad cookie file | Unable to detect domain when download favorites"), sys.exit()
     # takes a comma seperated string of links and converts them to a list
     if args['links']:
         args['links'] = [s.strip().split('?')[0] for s in args["links"].split(",")]
@@ -338,7 +367,7 @@ def get_args():
     if args['from_file']:
         if not os.path.exists(args['from_file']):
             print(f"--from-file {args['from_file']} does not exist")
-        with open(args['from_file'],'r') as f:
+        with open(args['from_file'],'r', encoding='utf-8') as f:
             # lines starting with '#' are ignored
             args['from_file'] = [line.rstrip().split('?')[0] for line in f if line[0] != '#' and line.strip() != '']
     else:
@@ -347,10 +376,10 @@ def get_args():
     if args['archive']:
         # the archive file doesn't need to exist but the directory does
         if not os.path.isdir(os.path.dirname(os.path.abspath(args['archive']))):
-            print(f"--archive {args['archive']} directory does not exist"), quit()
+            print(f"--archive {args['archive']} directory does not exist"), sys.exit()
 
     if args['only_filetypes'] and args['skip_filetypes']:
-        print('--only-filetypes and --skip-filetypes can not be given together'), quit()
+        print('--only-filetypes and --skip-filetypes can not be given together'), sys.exit()
     # takes a comma seperated string of extentions and converts them to a list
     if args['only_filetypes']:
         args['only_filetypes'] = [s.strip().lower() for s in args["only_filetypes"].split(",")]
@@ -368,14 +397,17 @@ def get_args():
     if args['skip_postname']:
         args['skip_postname'] = [s.strip().lower() for s in args["skip_postname"].split(",")]
 
+    # --- 我们的修改与整合 ---
+    # 重新添加我们的自定义参数处理逻辑
     if args['delete_extracted_types']:
         args['delete_extracted_types'] = [s.strip().lower() for s in args["delete_extracted_types"].split(",")]
+    # --- 修改结束 ---
 
     def check_date(args, key):
         try:
             args[key] = datetime.datetime.strptime(args[key], r'%Y%m%d')
         except:
-            print(f"--{key} {args[key]} is an invalid date | correct format: YYYYMMDD"), exit()
+            print(f"--{key} {args[key]} is an invalid date | correct format: YYYYMMDD"), sys.exit()
 
     if args['date']:
         check_date(args, 'date')
@@ -389,18 +421,19 @@ def get_args():
         check_date(args, 'user_updated_dateafter')
 
     def check_size(args, key):
-        found = re.search(r'([0-9]+)(gb|mb|kb|b)', args[key].lower())
+        found = re.search(r'([0-9\.]+)(gb|mb|kb|b)', args[key].lower())
         if found:
+            size = float(found.group(1))
             if found.group(2) == 'b':
-                args[key] = int(found.group(1))
+                args[key] = int(size)
             elif found.group(2) == 'kb':
-                args[key] = int(found.group(1)) * 10**2
+                args[key] = int(size * 10**3)
             elif found.group(2) == 'mb':
-                args[key] = int(found.group(1)) * 10**6
+                args[key] = int(size * 10**6)
             elif found.group(2) == 'gb':
-                args[key] = int(found.group(1)) * 10**9
+                args[key] = int(size * 10**9)
             return
-        print(f"--{key} {args[key]} is an invalid size | correct format: ex 1b 1kb 1mb 1gb"), quit()
+        print(f"--{key} {args[key]} is an invalid size | correct format: ex 1.5gb 500mb 100kb 10b"), sys.exit()
 
     if args['max_filesize']:
         check_size(args, 'max_filesize')
@@ -432,18 +465,19 @@ def get_args():
     if args['proxy_agent']:
         u = urlparse(args['proxy_agent'])
         if not u.netloc or not u.path:
-            print(f"Bad proxy agent url | Url shoule be something like https://example.com/agent"), exit()
+            print(f"Bad proxy agent url | Url shoule be something like https://example.com/agent"), sys.exit()
         if not u.scheme:
             u.scheme = 'http'
         args['proxy_agent'] = urlunparse(u)
 
         # we should change cookie domain to proxy agent
-        new_cookies = MozillaCookieJar()
-        for cookie in args['cookies']:
-            cookie.domain = f'.{u.netloc}'
-            cookie.domain_specified = True
-            cookie.domain_initial_dot = True
-            new_cookies.set_cookie(cookie)
-        args['cookies'] = new_cookies
+        if args['cookies']:
+            new_cookies = MozillaCookieJar()
+            for cookie in args['cookies']:
+                cookie.domain = f'.{u.netloc}'
+                cookie.domain_specified = True
+                cookie.domain_initial_dot = True
+                new_cookies.set_cookie(cookie)
+            args['cookies'] = new_cookies
 
     return args
