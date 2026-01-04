@@ -1,14 +1,5 @@
-# Web requests and sessions
-requests
-
-# HTML and XML parsing
-beautifulsoup4
-
-# Image processing (PIL - Python Imaging Library)
-Pillow
-
-# Support for .rar archives
+beautifulsoup4>=4.12.3
+Pillow>=10.4.0
+requests>=2.32.3
 rarfile
-
-# Support for .7z archives
 py7zr
