@@ -12,7 +12,8 @@ running_args = get_args()
 
 def parse_url(url):
     # parse urls
-    downloadable = re.search(r'^https://((?:kemono|coomer)\.(?:party|su))/([^/]+)/user/([^/]+)($|/post/([^/]+))($|/revision/([^/]+)$)',url)
+    # 更新：支持 .cr 和 .st
+    downloadable = re.search(r'^https://((?:kemono|coomer)\.(?:party|su|cr|st))/([^/]+)/user/([^/]+)($|/post/([^/]+))($|/revision/([^/]+)$)',url)
     if not downloadable:
         return None
     return downloadable.group(1)
@@ -145,26 +146,6 @@ def print_download_bar(total:int, downloaded:int, resumed:int, start):
     bar_empty = ' '*(50-done)
     overlap_buffer = ' '*15
     print(f'[{bar_fill}{bar_empty}] {downloaded}/{total[0]} {total[1]} at {rate[0]} {rate[1]}/s ETA {eta}{overlap_buffer}', end='\r')
-
-# redo this
-# def check_version():
-#     try:
-#         current_version = datetime.datetime.strptime(__version__, r'%Y.%m.%d')
-#     except:
-#         current_version = datetime.datetime.strptime(__version__, r'%Y.%m.%d.%H')
-#     github_api_url = 'https://api.github.com/repos/AplhaSlayer1964/kemono-dl/releases/latest'
-#     try:
-#         latest_tag = requests.get(url=github_api_url, timeout=300).json()['tag_name']
-#     except:
-#         logger.error("Failed to check latest version of kemono-dl")
-#         return
-#     try:
-#         latest_version = datetime.datetime.strptime(latest_tag, r'%Y.%m.%d')
-#     except:
-#         latest_version = datetime.datetime.strptime(latest_tag, r'%Y.%m.%d.%H')
-#     if current_version < latest_version:
-#         logger.debug(f"Using kemono-dl {__version__} while latest release is kemono-dl {latest_tag}")
-#         logger.warning(f"A newer version of kemono-dl is available. Please update to the latest release at https://github.com/AplhaSlayer1964/kemono-dl/releases/latest")
 
 
 # doesn't support multithreading
