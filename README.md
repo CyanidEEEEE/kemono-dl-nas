@@ -1,137 +1,45 @@
-# kemono-dl
-A downloader tool for kemono and coomer websties.
-> ⚠️ Starting from version `2025.08.13`, kemonod-dl is no longer fully backward compatible with earlier releases. If you prefer the default download template used in older versions, you can manually specify it using:
-> ```bash
-> --output "{service}/{creator_name} [{creator_id}]/[{published:%Y%m%d}] [{post_id}] {post_title}/{index}_{filename}"
-> ```
-> Keep in mind that while this template closely mirrors the previous behavior, older versions included logic to truncate file paths and names exceeding 255 characters. This new version does not replicate that trimming exactly, but the template should still work correctly in most cases.
- 
-## How to use
-1. **Install Python**  
-   Make sure Python 3.11 or later is installed and available in your system PATH.
+# Role: Python Developer / Code Maintainer
+# Task: Merge upstream updates into a customized NAS fork of kemono-dl
 
-2. **Download the latest release**  
-   Get the source code for the [latest version](https://github.com/AplhaSlayer1964/kemono-dl/releases/latest) and extract it.
+## 项目背景
+这是一个基于 `alphaslayer1964/kemono-dl` (Refactored Package Version) 的深度定制版本。
+这个版本运行在 NAS 上，有两个核心目标：
+1. **NAS 自动化增强**：下载后自动解压 (zip/rar/7z)，支持查重（基于哈希跳过已解压文件），支持删除源文件。
+2. **旧版路径完美兼容 (Legacy Compatibility)**：必须保证下载的文件名和路径与旧版单文件脚本 (`kemono-dl.py`) 完全一致，防止重复下载 TB 级的数据。
 
-3. **Install with pip**  
-   Open a terminal and **navigate to the root folder of the extracted project** (where `pyproject.toml` is located). Then run:
-   ```bash
-   pip install .
-   ```
+## 关键文件与修改点 (Critical Changes)
+在合并原作者的新代码时，请务必保留以下文件的特定逻辑，**不要盲目覆盖**：
 
-4.  **Run kemono-dl**  
-    ```bash
-    kemono-dl --version
-    kemono-dl "https://kemono.cr/SERVICE/user/CREATOR_ID" 
-    kemono-dl "https://coomer.st/SERVICE/user/CREATOR_ID/post/POST_ID"
-    ```
+### 1. `kemono_dl/kemono_dl.py` (高危文件)
+这是改动最大的文件，包含路径兼容逻辑。
+* **保留常量**：`DEFAULT_OUTPUT_TEMPLATE` 必须是旧版格式（不带 :%Y%m%d）。
+* **保留方法 `get_processed_variables(self, template_variables)`**：
+    * 这个函数负责将索引从 0-based 改为 1-based (index + 1)。
+    * 负责将索引自动补零 (zfill)。
+    * 负责将无效日期转换为字符串 "None" 而不是 "00010101"。
+    * **如果丢了这个函数，所有文件名都会变，导致全量重复下载！**
+* **保留 Hook**：在 `download_post_attachments` 方法中，下载前有“查重逻辑”，下载后有“解压逻辑 (`extract_archive`)”。
 
-> **\*** To update, repeat steps 2 and 3 using the latest release.
+### 2. `kemono_dl/utils.py` (工具库)
+* **保留 `generate_file_path` 中的 `_sanitize` 逻辑**：
+    * 必须使用复刻旧版的清理逻辑（替换非法字符为下划线，保留末尾的点并替换为下划线，而不是删除）。
+* **保留底部 NAS 函数**：文件末尾添加的 `extract_archive` (含 rar/7z 支持), `process_existing_archives`, `clear_failed_marks` 等函数必须保留。
 
-# Command Line Options
+### 3. `kemono_dl/__main__.py` (入口)
+* **保留参数**：`--delete-extracted-types`, `--no-auto-extract`, `--clear-failed-marks`。
 
-| Option                             | Description                                                                                                                                                   |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--version`                        | Prints the version then quits.                                                                                                                                |
-| `--path PATH`                      | Set the base path for downloads.                                                                                                                              |
-| `--output [Type:]TEMPLATE(s)`      | Set the output template file pattern. See [Output Template](https://github.com/AlphaSlayer1964/kemono-dl?tab=readme-ov-file#output-template) for more detail. |
-| `--batch-file FILE`                | Loads urls from file. One url per line.                                                                                                                       |
-| `--cookies FILEs`                  | Provide a cookies file(s) for Kemono/Coomer. Required for `--favorite-creators-coomer` and `--favorite-creators-kemono`.                                      |
-| `--favorite-creators-coomer`       | Download all favorite creators from Coomer.                                                                                                                   |
-| `--favorite-creators-kemono`       | Download all favorite creators from Kemono.                                                                                                                   |
-| `--coomer-login USERNAME PASSWORD` | Username and password for Coomer.                                                                                                                             |
-| `--kemono-login USERNAME PASSWORD` | Username and password for Kemono.                                                                                                                             |
-| `--restrict-name`                  | Restrict output file to ASCII characters.                                                                                                                     |
-| `--custom-template-variables FILE` | Path to a json file with your custom template variables                                                                                                       |
-| `--date [Type:]DATE`               | Download only posts published on this date. Format 'YYYYMMDD' **(\*1)**                                                                                       |
-| `--datebefore [Type:]DATE`         | Download only posts published on or before this date. Format 'YYYYMMDD' **(\*1)**                                                                             |
-| `--dateafter [Type:]DATE`          | Download only posts published on or after this date. Format 'YYYYMMDD' **(\*1)**                                                                              |
-| `--skip-extensions EXTs`           | A comma seperated list of file extensions to skip (Do not include the period) (Checks the extention of the filename not the server filename).                 |
-| `--skip-attachments`               | Skip downloading post attachments.                                                                                                                            |
-| `--write-content`                  | Write the post content to a file.                                                                                                                             |
-| `--no-tmp`                         | Do not use `.tmp` files. Write directly into the output file.                                                                                                 |
+### 4. `requirements.txt`
+* **保留依赖**：`rarfile`, `py7zr`。
 
-> **\*1** You can apply date filters to different types. The available options are `"added:YYYYMMDD"`, `"edited:YYYYMMDD"`, and `"published:YYYYMMDD"`. If no type is specified, the published date is used by default.
+## 更新/合并策略 (Update Strategy)
+请按以下步骤帮我更新代码：
+1.  **安全覆盖**：对于 `models.py`, `downloader.py`, `session.py`, `version.py` 等未提及的文件，直接使用原作者的最新版覆盖，以获取性能提升和 Bug 修复。
+2.  **手动合并**：
+    * 读取原作者最新的 `kemono_dl/kemono_dl.py`，将我的 `get_processed_variables` 方法插回去，并在 `download_post_attachments` 里的适当位置重新插入解压代码。
+    * 读取原作者最新的 `utils.py`，确保 `generate_file_path` 依然兼容旧版命名，并将我的解压函数追加到文件末尾。
 
-## Output Template
-
-### Output Template Type
-
-Output template types let you define custom file path formats for different categories of output. By default, all types use the following template: `"{service}/{creator_id}/{post_id}/{filename}"`.
-If no specific type is provided, this passed template will be applied for all output types.  
-
-| Type           | Description                                      |
-| -------------- | ------------------------------------------------ |
-| `"attachment"` | The output template for saving post attachments. |
-| `"content"`    | The output template for saving post content.     |
-
-#### Output Template Type Examples
-```bash
-kemono-dl --output "{service}/{creator_id}/{post_id}/{index}_{filename}" --output "content:{service}/{creator_id}/{post_id}/{filename}" "https://kemono.cr/patreon/user/12345/post/67890" 
-patreon/12345/67890/0_attachment.png
-patreon/12345/67890/1_attachment.png
-patreon/12345/67890/content.html
-```
-
-### Output Template Variables
-
-| Variable              | Description                                                                                                                                                                                                 |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `{service}`           | Service Name.                                                                                                                                                                                               |
-| `{creator_id}`        | Creator's ID                                                                                                                                                                                                |
-| `{creator_name}`      | Creator's name.                                                                                                                                                                                             |
-| `{post_id}`           | Post ID.                                                                                                                                                                                                    |
-| `{post_title}`        | Post title.                                                                                                                                                                                                 |
-| `{server_filename}`   | Server file name (with extension).                                                                                                                                                                          |
-| `{server_file_name}`  | Server file name (without extension) (equivalent to `{sha256}`).                                                                                                                                            |
-| `{server_file_ext}`   | Server file extension (without the ".") (May be different from `{file_ext}`).                                                                                                                               |
-| `{filename}`          | Original file name (with extension). **(\*4)**                                                                                                                                                              |
-| `{file_name}`         | Original file name (without extension).                                                                                                                                                                     |
-| `{file_ext}`          | Original file extension (without the ".") (May be different from `{server_file_ext}`).                                                                                                                      |
-| `{sha256}`            | SHA-256 hash of the file generated by Kemono/Coomer.                                                                                                                                                        |
-| `{added}`             | DateTime the post was added to kemono/coomer. Use `{added:FORMAT}` to format. See [format codes](https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes). **(\*1, \*2, \*3)**   |
-| `{published}`         | DateTime the post was published to service. Use `{published:FORMAT}` to format. See [format codes](https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes). **(\*1, \*2, \*3)** |
-| `{edited}`            | DateTime the post was edited by kemono/coomer. Use `{edited:FORMAT}` to format. See [format codes](https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes). **(\*1, \*2, \*3)** |
-| `{index}`             | The index order of the posts file and attachments. (Starts at 0) **(\*5)**                                                                                                                                  |
-| `{attachments_count}` | The total number of post attchments (Includes post file).                                                                                                                                                   |
-
-> **\*1** If there is an error parsinf `{added}`, `{published}`, or `{edited}` it will default to `January 1, 0001`. This includes if any of those values are `Null` for the post.  
-
-> **\*2** The Fanbox service always has `{added}` as `Null` so it will always return `January 1, 0001`.  
-
-> **\*3** In Windows batch files, you must escape `%` with `%%`.  
-
-> **\*4** Be mindful that `{filename}` is not guaranteed to be unique. It is recomended to use `{server_filename}` or `{sha256}` to guaranteed uniqueness.  
-
-> **\*5** If a Post has a Post `File` it will be index 0 followed by the other `Attachments`.
-
-#### Output Template Examples
-```bash
-kemono-dl --output "{service}/{creator_id}/{post_id}/{filename}" "https://kemono.cr/patreon/user/12345/post/67890"
-patreon/12345/67890/attachment.png
-
-kemono-dl --output "{service}/{creator_id}/{post_id}/{server_filename}" "https://kemono.cr/patreon/user/12345/post/67890"
-patreon/12345/67890/wm54swsglbfs4583qzp7u880tmglvdqzeg6vqni12s6ywfsk3l8afp5ycfwo2hw4.png 
-# wm54swsglbfs4583qzp7u880tmglvdqzeg6vqni12s6ywfsk3l8afp5ycfwo2hw4 is the SHA-256 hash of the file that kemono/coomer generated
-
-kemono-dl --output "{service}/{creator_id}/{post_id}_{file_name}_{sha256}.{ext}" "https://kemono.cr/patreon/user/12345/post/67890"
-patreon/12345/67890_attachment_wm54swsglbfs4583qzp7u880tmglvdqzeg6vqni12s6ywfsk3l8afp5ycfwo2hw4.png
-
-kemono-dl --output "{service}/{creator_id}/[{published:%Y-%m-%d %H-%M-%S}]_{post_id}/{filename}" "https://kemono.cr/patreon/user/12345/post/67890"
-patreon/12345/[2025-08-13 00-00-00]_67890/attachment.png # The post was published on August 13, 2025 at 12:00:00 AM
-```
-
-#### Custom Template Variables
-
-You can define your own template variables in a JSON file, and they will be evaluated as Python expressions.
-Custom variables can also reference built-in template variables using `{...}` syntax.
-
-```json
-{
-   "titleTrunc": "'{post_title}'[:50]",
-   "titleNoDogs": "'{post_title}'.replace('dog', 'cat')",
-   "indexPlusOne": "{index} + 1",
-   "indexPlusOneZfilled": "str({index} + 1).zfill(len(str({attachments_count})))"
-}
-```
-In your output template, simply use the variables like the default ones (ie `{titleTrunc}`) to insert their evaluated values.
+## 验证清单 (Verification)
+更新完成后，请检查：
+1.  文件名索引是否是从 1 开始的？（例如 `1_File.zip` 而不是 `0_File.zip`）
+2.  日期解析失败是否显示为 `[None]`？
+3.  自动解压功能是否还在？
