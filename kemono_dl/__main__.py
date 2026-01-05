@@ -20,6 +20,7 @@ def parse_args():
     # parser.add_argument("--favorite-posts-kemono", action="store_true", help="Download favorite posts from Kemono")
     parser.add_argument("--batch-file", type=str, action="append", help="Download URLs from a file")
     parser.add_argument("URL", nargs="*", help="URL(s) to download")
+    parser.add_argument("--retry", type=int, default=20, help="Download retry times (default: 20)")
     # Output
     parser.add_argument("--path", type=str, default=os.getcwd(), help="Download directory path")
     parser.add_argument("--output", type=str, action="append", metavar="[Type:]Template", default=[KemonoDL.DEFAULT_OUTPUT_TEMPLATE], help="Post attachments output filename tamplate")
@@ -130,6 +131,8 @@ def main() -> None:
         restrict_names=args.restrict_names,
         custom_template_variables=custom_template_variables,
         archive_file=args.archive,
+        force_overwrite=False, # 可以根据需要改为 "soft" 或 True
+        max_retries=args.retry, # <--- 传入重试次数
         post_filters=post_filters,
         attachment_filters=attachment_filters,
         skip_attachments=args.skip_attachments,

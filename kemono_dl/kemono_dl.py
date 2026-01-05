@@ -4,6 +4,7 @@ import os
 import re
 import time
 import json
+from datetime import datetime
 from http.cookiejar import LoadError
 from typing import List, Literal
 
@@ -23,7 +24,7 @@ class KemonoDL:
     URL_PARSE_PATTERN = r"^https://(kemono|coomer)\.\w+/([^/]+)/user/([^/]+)(?:/post/([^/]+))?$"
     
     # 模拟旧版结构: Downloads/服务/作者 [ID]/[日期] [帖子ID] 标题/序号_文件名
-    DEFAULT_OUTPUT_TEMPLATE = "Downloads/{service}/{creator_name} [{creator_id}]/[{published:%Y%m%d}] [{post_id}] {post_title}/{index}_{file_name}.{file_ext}"
+    DEFAULT_OUTPUT_TEMPLATE = "Downloads/{service}/{creator_name} [{creator_id}]/[{published}] [{post_id}] {post_title}/{index}_{file_name}.{file_ext}"
     
     # NAS hash filename constant
     HASH_FILENAME = '.extracted_hash'
@@ -39,7 +40,7 @@ class KemonoDL:
         custom_template_variables: dict = {},
         archive_file: str | None = None,
         force_overwrite: OverwriteMode = "soft",
-        max_retries: int = 3,
+        max_retries: int = 20, # <--- 默认重试改为20次
         post_filters: dict = {},
         attachment_filters: dict = {},
         skip_attachments: bool = False,
@@ -267,6 +268,33 @@ class KemonoDL:
             self.write_post_content(creator, post)
 
         self.write_archive_file(domain, post.service, post.user, post.id)
+    
+    # 核心修正：预处理变量以完美复刻旧版行为
+    def get_processed_variables(self, template_variables):
+        vars_dict = template_variables.toDict(self.custom_template_variables)
+        
+        # 1. 修正日期: datetime.min -> "None" (解决 [00010101] 问题)
+        for date_field in ['published', 'added', 'edited']:
+            if date_field in vars_dict:
+                dt = vars_dict[date_field]
+                if dt == datetime.min:
+                    vars_dict[date_field] = "None"
+                elif isinstance(dt, datetime):
+                    vars_dict[date_field] = dt.strftime("%Y%m%d")
+        
+        # 2. 修正索引: 0-based -> 1-based, 并根据附件总数自动补零 (解决 0_Alistar -> 1_Alistar)
+        if 'index' in vars_dict and 'attachments_count' in vars_dict:
+            try:
+                # 新版默认是从0开始的，旧版是从1开始
+                idx = int(vars_dict['index']) + 1
+                count = int(vars_dict['attachments_count'])
+                # 旧版逻辑：zfill(len(str(len(attachments))))
+                padding = len(str(count))
+                vars_dict['index'] = str(idx).zfill(padding)
+            except:
+                pass
+        
+        return vars_dict
 
     def download_post_attachments(self, domain: str, creator: Creator, post: Post) -> None:
         if not post.attachments:
@@ -281,11 +309,13 @@ class KemonoDL:
 
             template_variables = FileTemplateVaribales(creator, post, attachment)
             expected_sha256 = template_variables.sha256
-
+            
+            # 使用预处理后的变量生成路径
+            vars_dict = self.get_processed_variables(template_variables)
             file_path = generate_file_path(
                 self.path,
                 self.output_templates.get("attachments", {}),
-                template_variables.toDict(self.custom_template_variables),
+                vars_dict,
                 self.restrict_names,
             )
             
@@ -326,10 +356,12 @@ class KemonoDL:
                     download_file(self.session, url, file_path, temp_file=not self.no_tmp)
                     break
                 except Exception as e:
-                    print(f"[Error] Failed to download attachment from {url!r}: {e}")
+                    print(f"[Error] Failed to download attachment from {url!r} (Attempt {attempt + 1}/{self.max_retries}): {e}")
+                    if attempt < self.max_retries - 1:
+                        time.sleep(2) # 等待2秒再重试
             else:
                 print(f"[Error] All {self.max_retries} download reties failed")
-                return # Skip extraction if download failed
+                return 
 
             actual_sha256 = get_sha256_hash(file_path)
             if expected_sha256 != actual_sha256:
@@ -346,10 +378,13 @@ class KemonoDL:
         sha256 = compute_sha256(post.content)
         attachment = Attachment(name="content.html", path=f"{sha256}.html")
         template_variables = FileTemplateVaribales(creator, post, attachment)
+        
+        # 使用预处理后的变量生成路径
+        vars_dict = self.get_processed_variables(template_variables)
         file_path = generate_file_path(
             self.path,
             self.output_templates.get("content", {}),
-            template_variables.toDict(self.custom_template_variables),
+            vars_dict,
             self.restrict_names,
         )
         expected_sha256 = template_variables.sha256

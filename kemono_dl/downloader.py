@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import requests
 
 from .session import CustomSession
 from .utils import format_bytes
@@ -23,7 +24,10 @@ def download_file(session: CustomSession, url: str, filepath: str, chunk_size: i
             mode = "ab"
             print("[downloading] Resuming partially downloaded file")
 
-    with session.get(url, stream=True, allow_redirects=True, headers=headers) as response:
+    # 修改点：添加 timeout=60，单位为秒
+    # 意思是：如果连接服务器超过60秒没反应，或者读取数据中间卡顿超过60秒，就强制报错
+    # 报错后，外层的重试逻辑就会捕获这个错误，并开始下一次重试
+    with session.get(url, stream=True, allow_redirects=True, headers=headers, timeout=60) as response:
         response.raise_for_status()
 
         total_size = int(response.headers.get("content-length", 0)) + downloaded

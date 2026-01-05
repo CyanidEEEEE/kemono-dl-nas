@@ -42,6 +42,36 @@ def get_sha256_url_content(session: Session, url: str, chunk_size: int = 8192):
     return sha256.hexdigest()
 
 
+# --- Legacy Compatibility Functions (Ported from old src/helper.py) ---
+# 为了保证和旧版脚本生成的路径完全一致，必须使用旧版的清理逻辑
+
+def _clean_folder_name(folder_name: str) -> str:
+    """Old helper.py: clean_folder_name"""
+    if not folder_name.rstrip():
+        folder_name = '_'
+    # 旧版逻辑：替换非法字符以及末尾的点
+    name_clean = re.sub(r'[\x00-\x1f\\/:\"*?<>\|]|\.$', '_', folder_name.rstrip())[:248]
+    # 旧版逻辑：字节长度限制
+    while len(name_clean.encode('utf-8', 'replace')) > 255:
+        name_clean = name_clean[:-1]
+    return name_clean
+
+def _clean_file_name(file_name: str) -> str:
+    """Old helper.py: clean_file_name"""
+    if not file_name:
+        file_name = '_'
+    # 旧版逻辑：不替换末尾的点，因为要保留扩展名
+    file_name = re.sub(r'[\x00-\x1f\\/:\"*?<>\|]', '_', file_name)
+    file_name, file_extension = os.path.splitext(file_name)
+    
+    # 旧版逻辑：保留扩展名，截断文件名部分
+    name_limit = 255 - len(file_extension) - 5 # -5 for .part safety
+    name_clean = file_name[:name_limit] + file_extension
+    while len(name_clean.encode('utf-8', 'replace')) > 250:
+        name_limit -= 1
+        name_clean = file_name[:name_limit] + file_extension
+    return name_clean
+
 def generate_file_path(
     base_path: str,
     output_template: str,
@@ -49,14 +79,24 @@ def generate_file_path(
     restrict_names: bool = False,
     replacement: str = "_",
 ) -> str:
-    def _sanitize(value: str, replace: str = "_") -> str:
-        return re.sub(r'[<>:"/\\|?*\x00-\x1F]', replace, value).rstrip(" .")
-
     path_segments = []
     try:
-        for path_segment in re.split(r"[\\/]", output_template):
-            path_segment_formatted = path_segment.format_map(template_variables)
-            path_segments.append(_sanitize(path_segment_formatted, replacement))
+        # 使用正则拆分路径，以便分别处理文件夹和文件名
+        raw_segments = re.split(r"[\\/]", output_template)
+        
+        for index, path_segment in enumerate(raw_segments):
+            # 格式化变量
+            formatted = path_segment.format_map(template_variables)
+            
+            # 关键判断：如果是最后一段，视为文件名，使用 _clean_file_name
+            # 其他段视为文件夹，使用 _clean_folder_name
+            if index == len(raw_segments) - 1:
+                cleaned = _clean_file_name(formatted)
+            else:
+                cleaned = _clean_folder_name(formatted)
+                
+            path_segments.append(cleaned)
+            
     except KeyError as e:
         missing_key = e.args[0]
         raise ValueError(f"[Error] Missing template key: '{missing_key}'.")
@@ -70,6 +110,7 @@ def generate_file_path(
         path = Path.cwd() / path
 
     if restrict_names:
+        # 如果开启了 ascii 限制，再做一次过滤
         path = Path(re.sub(r"[^\x20-\x7E]", replacement, str(path)))
 
     return str(path)
@@ -104,7 +145,6 @@ def extract_archive(archive_path: str, hash_value: str, delete_extracted_types: 
                     except zipfile.BadZipFile as e:
                         raise e 
                     except Exception:
-                        # Handle problematic filenames
                         new_name = member.filename.encode('cp437').decode('gbk', 'ignore')
                         if new_name != member.filename:
                             member.filename = new_name
@@ -139,7 +179,6 @@ def extract_archive(archive_path: str, hash_value: str, delete_extracted_types: 
                 extracted_successfully = True
                 break
             except format_exception_types as e:
-                # print(f"[extract] 作为 {format_key.upper()} 格式解压失败: {str(e)}")
                 last_exception = e
                 continue
             except (RuntimeError, rarfile.BadRarFile) as e:
@@ -162,7 +201,6 @@ def extract_archive(archive_path: str, hash_value: str, delete_extracted_types: 
         except (FileNotFoundError, json.JSONDecodeError):
             hash_data = {}
         
-        # Debug Log
         if not is_new_download:
              print(f"[Debug] 已记录解压哈希: {hash_value} -> {file_name}")
 
@@ -203,7 +241,6 @@ def extract_archive(archive_path: str, hash_value: str, delete_extracted_types: 
             else:
                 with open(retry_file, 'w') as f: f.write(str(retry_count))
                 print(f"[warning] 文件 {os.path.basename(archive_path)} 下载解压失败第{retry_count}次，将重试下载")
-                # 如果不是加密错误，删除文件以便重试下载
                 if "encrypted" not in str(e).lower() and "password" not in str(e).lower():
                     if os.path.exists(archive_path): os.remove(archive_path)
         
@@ -220,7 +257,6 @@ def process_existing_archives(directory: str, delete_extracted_types: list = [])
         for file in files:
             if file.lower().endswith(('.zip', '.7z', '.rar')):
                 archive_path = os.path.join(root, file)
-                # 使用新的 SHA256 函数
                 hash_value = get_sha256_hash(archive_path)
                 extract_archive(archive_path, hash_value, delete_extracted_types, is_new_download=False)
 
