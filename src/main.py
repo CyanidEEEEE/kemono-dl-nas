@@ -51,8 +51,11 @@ class downloader:
 
         for i in ('/v1','/v0'):
             self.api_ver = i
-            if requests.get(f'https://kemono.cr/api{self.api_ver}/app_version', headers=self.headers).status_code == 200:
-                break
+            try:
+                if requests.get(f'https://kemono.cr/api{self.api_ver}/app_version', headers=self.headers, timeout=10).status_code == 200:
+                    break
+            except:
+                pass
 
         # file/folder naming
         self.name_templates_glop = ''
@@ -187,9 +190,6 @@ class downloader:
                 if i_ts > previous_cache_ts:
                     previous_cache_ts = i_ts
                     previous_cache = i
-            # the creators list changes frequently, so I think doing the length check will result in frequent "expiration" and is oppose to my purpose of caching.
-            # plus, the length in the header is gzip-ed length, it will be another headache to deal with.
-            # creators_len = self.session.head(url=creators_api, cookies=self.cookies, headers=self.headers, timeout=self.timeout).headers.get('Content-Length','')
             if not previous_cache or cache_ts - previous_cache_ts > self.cache_creators_expire:
                 with open(cache_dir / (cache_prefix + str(cache_ts)), 'w', encoding='utf-8') as cache_writing:
                     resp = self.session.get(url=creators_api, cookies=self.cookies, headers=self.headers, timeout=self.timeout)
@@ -200,7 +200,6 @@ class downloader:
                     resp_content_decode = cache_reading.read()
         else:
             resp = self.session.get(url=creators_api, cookies=self.cookies, headers=self.headers, timeout=self.timeout)
-            # json.loads accepts bytes as well, I'm not sure if leave it like auto-detect (text encoding) is a good idea or not
             resp_content_decode = resp.content.decode('utf-8')
         return json.loads(resp_content_decode)
 
@@ -213,7 +212,17 @@ class downloader:
     def get_favorites(self, domain:str, fav_type:str, retry:int, services:list = None):
         fav_api = f'https://{domain}/api{self.api_ver}/account/favorites?type={fav_type}'
         logger.debug(f"Getting favorite json from {fav_api}")
-        response = self.session.get(url=fav_api, headers=self.headers, cookies=self.cookies, timeout=self.timeout)
+        try:
+            response = self.session.get(url=fav_api, headers=self.headers, cookies=self.cookies, timeout=self.timeout)
+        except Exception as e:
+            if retry>0:
+                logger.warning(f"Failed to get favorites: {e} | Retrying")
+                time.sleep(5)
+                self.get_favorites(domain=domain, fav_type=fav_type, retry=retry-1, services=services)
+            else:
+                logger.error(f"Failed to get favorites: {e} | All retries failed")
+            return
+
         if response.status_code == 401:
             logger.error(f"Failed to get favorites: {response.status_code} {response.reason} | Bad cookie file")
             return
@@ -224,14 +233,21 @@ class downloader:
                 return
             logger.error(f"Failed to get favorites: {response.status_code} {response.reason} | All retries failed")
             return
+            
         for favorite in response.json():
-            if fav_type == 'post':
-                self.get_post(f"https://{domain}/{favorite['service']}/user/{favorite['user']}/post/{favorite['id']}", retry=self.retry)
-            if fav_type == 'artist':
-                if not (favorite['service'] in services or 'all' in services):
-                    logger.info(f"Skipping user {favorite['name']} | Service {favorite['service']} was not requested")
-                    continue
-                self.get_post(f"https://{domain}/{favorite['service']}/user/{favorite['id']}", retry=self.retry)
+            # --- 修改：增加 try-except 防止单个画师失败导致整个列表停止 ---
+            try:
+                if fav_type == 'post':
+                    self.get_post(f"https://{domain}/{favorite['service']}/user/{favorite['user']}/post/{favorite['id']}", retry=self.retry)
+                if fav_type == 'artist':
+                    if not (favorite['service'] in services or 'all' in services):
+                        logger.info(f"Skipping user {favorite['name']} | Service {favorite['service']} was not requested")
+                        continue
+                    self.get_post(f"https://{domain}/{favorite['service']}/user/{favorite['id']}", retry=self.retry)
+            except Exception as e:
+                logger.error(f"处理收藏 {favorite.get('name', 'Unknown')} 时出错: {e} | 跳过并继续下一个")
+                continue
+            # --- 修改结束 ---
 
     def get_post(self, url:str, retry:int, chunk=0, first=True):
         found = re.search(r'(https://((?:kemono|coomer)\.(?:party|su|cr|st))/)(([^/]+)/user/([^/]+)($|/post/[^/]+)($|/revision/[^/]+))', url)
@@ -258,35 +274,55 @@ class downloader:
         while True:
             if is_post:
                 logger.debug(f"Requesting post json from: {api}")
-                response = self.session.get(url=f"{api}", cookies=self.cookies, headers=self.headers, timeout=self.timeout)
-                if response.status_code == 429:
-                    logger.warning(f"Failed to request post json from: {api} | 429 Too Many Requests | All retries failed")
+                try:
+                    response = self.session.get(url=f"{api}", cookies=self.cookies, headers=self.headers, timeout=self.timeout)
+                    if response.status_code == 429:
+                        logger.warning(f"Failed to request post json from: {api} | 429 Too Many Requests | All retries failed")
+                        return
+                except Exception as e:
+                    logger.error(f"Failed to request post json: {e}")
                     return
             else:
                 logger.debug(f"Requesting user json from: {api}?o={chunk}")
-                response = self.session.get(url=f"{api}/posts?o={chunk}", cookies=self.cookies, headers=self.headers, timeout=self.timeout)
-                if response.status_code == 429:
-                    logger.warning(f"Failed to request user json from: {api}?o={chunk} | 429 Too Many Requests | All retries failed")
-                    return
-            json = response.json()
-            if not json:
+                
+                # --- 修改：无限重试逻辑 ---
+                while True:
+                    try:
+                        response = self.session.get(url=f"{api}/posts?o={chunk}", cookies=self.cookies, headers=self.headers, timeout=self.timeout)
+                        if response.ok:
+                            break
+                        if response.status_code == 429:
+                            logger.warning(f"429 Too Many Requests. Sleeping 120s...")
+                            time.sleep(120)
+                            continue
+                        # 对于其他错误状态码，打印警告并等待重试
+                        logger.warning(f"Failed to request user json: {response.status_code}. Retrying in 30s...")
+                        time.sleep(30)
+                    except Exception as e:
+                        logger.warning(f"Network error when requesting user json: {e}. Retrying in 30s...")
+                        time.sleep(30)
+                # --- 修改结束 ---
+
+            json_data = response.json()
+            if not json_data:
                 if is_post:
                     logger.error(f"Unable to find post json for {api}")
                 elif chunk == 0:
                     logger.error(f"Unable to find user json for {api}?o={chunk}")
                 return # completed
-            if is_post and isinstance(json, dict) and json.get('post'):
-                json = json.get('post')
-            if not isinstance(json,list):
-                json=[json]
-            for post in json:
+            if is_post and isinstance(json_data, dict) and json_data.get('post'):
+                json_data = json_data.get('post')
+            if not isinstance(json_data,list):
+                json_data=[json_data]
+            for post in json_data:
                 # only download once
                 if not is_post and first:
                     if ('{added}' in self.name_templates_glop or '{updated}' in self.name_templates_glop):
                         logger.debug(f"Requesting full post json from {api}/post/{post['id']}")
                         try:
-                            post = self.session.get(url=f"{api}/post/{post['id']}", cookies=self.cookies, headers=self.headers, timeout=self.timeout)
-                            post = post.json().get('post')
+                            # 简单的重试
+                            post_resp = self.session.get(url=f"{api}/post/{post['id']}", cookies=self.cookies, headers=self.headers, timeout=self.timeout)
+                            post = post_resp.json().get('post')
                         except Exception as exc:
                             logger.error(f"Failed to get full post json for first post, {type(exc)}: {exc}")
                             first = False
@@ -326,9 +362,25 @@ class downloader:
                     logger.debug(f"Requesting full post json from {api}/post/{post['id']}")
                     post_jr = post
                     try:
-                        post = self.session.get(url=f"{api}/post/{post['id']}", cookies=self.cookies, headers=self.headers, timeout=self.timeout)
-                        post = post.json().get('post')
-                        post = self.clean_post(post, user, site, post_jr)
+                        # 尝试无限重试获取完整帖子信息
+                        while True:
+                            try:
+                                post_resp = self.session.get(url=f"{api}/post/{post['id']}", cookies=self.cookies, headers=self.headers, timeout=self.timeout)
+                                if post_resp.ok:
+                                    post = post_resp.json().get('post')
+                                    post = self.clean_post(post, user, site, post_jr)
+                                    break
+                                elif post_resp.status_code == 429:
+                                    time.sleep(60)
+                                    continue
+                                else:
+                                    # 如果是获取单个帖子详情失败，可能不值得卡死，重试几次后跳过
+                                    logger.warning(f"Failed to get full post info: {post_resp.status_code}. Retrying...")
+                                    time.sleep(10)
+                            except Exception as e:
+                                logger.error(f"Network error getting full post info: {e}. Retrying...")
+                                time.sleep(10)
+
                     except Exception as exc:
                         logger.error(f"Failed to get full post json for post {post['id']}, {type(exc)}: {exc}")
                         continue
@@ -343,7 +395,7 @@ class downloader:
                     logger.exception("Unable to download post | service:{service} user_id:{user_id} post_id:{id}".format(**post['post_variables']))
                 self.comp_posts.append("https://{site}/{service}/user/{user_id}/post/{id}".format(**post['post_variables']))
             chunk_size = 50
-            if len(json) < chunk_size:
+            if len(json_data) < chunk_size:
                 return # completed
             chunk += chunk_size
 
@@ -357,11 +409,11 @@ class downloader:
                 logger.warning(f"Profile {img_type}s are not supported for {post['post_variables']['service']} users")
                 continue
             image_url = "https://{site}/{img_type}s/{service}/{user_id}".format(img_type=img_type, **post['post_variables'])
-            response = self.session.get(url=image_url,headers=self.headers, cookies=self.cookies, timeout=self.timeout)
-            if response.status_code == 429:
-                logger.error(f"Unable to download profile {img_type} for {post['post_variables']['username']} | 429 Too Many Requests | All retries failed")
-                return
             try:
+                response = self.session.get(url=image_url,headers=self.headers, cookies=self.cookies, timeout=self.timeout)
+                if response.status_code == 429:
+                    logger.error(f"Unable to download profile {img_type} for {post['post_variables']['username']} | 429 Too Many Requests | All retries failed")
+                    return
                 image = Image.open(BytesIO(response.content))
                 file_variables = {
                     'filename':img_type,
@@ -385,17 +437,23 @@ class downloader:
             logger.debug("Skipping dms for non patreon user https://{site}/{service}/user/{user_id}".format(**post['post_variables']))
             return
         post_url = "https://{site}/api{api_ver}/{service}/user/{user_id}/dms".format(**post['post_variables'],api_ver=self.api_ver)
-        response = self.session.get(url=post_url, allow_redirects=True, headers=self.headers, cookies=self.cookies, timeout=self.timeout)
-        if not response.ok:
-            if response.status_code==429:
+        try:
+            response = self.session.get(url=post_url, allow_redirects=True, headers=self.headers, cookies=self.cookies, timeout=self.timeout)
+        except Exception:
+            response = None
+        
+        if not response or not response.ok:
+            if response and response.status_code==429:
                 logger.warning("Unable to download DMs for {service} {user_id} | 429 | All retries failed".format(**post['post_variables']))
                 return
             else:
-                logger.warning("Unable to download DMs for {service} {user_id} | {code} | Retrying.".format(core=response.status_code,**post['post_variables']))
+                code = response.status_code if response else "Error"
+                logger.warning("Unable to download DMs for {service} {user_id} | {code} | Retrying.".format(code=code,**post['post_variables']))
             if retry > 0:
                 self.write_dms(post=post,retry=retry-1)
             else:
-                logger.error("Unable to download DMs for {service} {user_id} | {code} | All retries failed.".format(core=response.status_code,**post['post_variables']))
+                code = response.status_code if response else "Error"
+                logger.error("Unable to download DMs for {service} {user_id} | {code} | All retries failed.".format(code=code,**post['post_variables']))
             return
         dms_json = response.json()
         dmc = len(dms_json)
@@ -417,17 +475,23 @@ class downloader:
             return
         post_url = "https://{site}/api{api_ver}/{service}/user/{user_id}/fancards".format(**post['post_variables'],api_ver=self.api_ver)
         logger.info(f"Downloading fancards {post_url}")
-        response = self.session.get(url=post_url, allow_redirects=True, headers=self.headers, cookies=self.cookies, timeout=self.timeout)
-        if not response.ok:
-            if response.status_code==429:
+        try:
+            response = self.session.get(url=post_url, allow_redirects=True, headers=self.headers, cookies=self.cookies, timeout=self.timeout)
+        except Exception:
+            response = None
+
+        if not response or not response.ok:
+            if response and response.status_code==429:
                 logger.warning("Unable to find Fancards for {service} {user_id} | 429 | All retries failed".format(**post['post_variables']))
                 return
             else:
-                logger.warning("Unable to find Fancards for {service} {user_id} | {code} | Retrying.".format(core=response.status_code,**post['post_variables']))
+                code = response.status_code if response else "Error"
+                logger.warning("Unable to find Fancards for {service} {user_id} | {code} | Retrying.".format(code=code,**post['post_variables']))
             if retry > 0:
                 self.download_fancards(post=post,retry=retry-1)
             else:
-                logger.error("Unable to find Fancards for {service} {user_id} | {code} | All retries failed.".format(core=response.status_code,**post['post_variables']))
+                code = response.status_code if response else "Error"
+                logger.error("Unable to find Fancards for {service} {user_id} | {code} | All retries failed.".format(code=code,**post['post_variables']))
             return
         page_json = response.json()
         fancards_json = page_json if isinstance(page_json, list) else [page_json]
@@ -452,17 +516,23 @@ class downloader:
 
     def write_announcements(self, post:dict, retry:int):
         post_url = "https://{site}/api{api_ver}/{service}/user/{user_id}/announcements".format(**post['post_variables'],api_ver=self.api_ver)
-        response = self.session.get(url=post_url, allow_redirects=True, headers=self.headers, cookies=self.cookies, timeout=self.timeout)
-        if not response.ok:
-            if response.status_code==429:
+        try:
+            response = self.session.get(url=post_url, allow_redirects=True, headers=self.headers, cookies=self.cookies, timeout=self.timeout)
+        except Exception:
+            response = None
+
+        if not response or not response.ok:
+            if response and response.status_code==429:
                 logger.warning("Unable to get announcements for {service} {user_id} | 429 | All retries failed".format(**post['post_variables']))
                 return
             else:
-                logger.warning("Unable to get announcements for {service} {user_id} | {code} | Retrying.".format(core=response.status_code,**post['post_variables']))
+                code = response.status_code if response else "Error"
+                logger.warning("Unable to get announcements for {service} {user_id} | {code} | Retrying.".format(code=code,**post['post_variables']))
             if retry > 0:
                 self.write_announcements(post=post,retry=retry-1)
             else:
-                logger.error("Unable to get announcements for {service} {user_id} | {code} | All retries failed.".format(core=response.status_code,**post['post_variables']))
+                code = response.status_code if response else "Error"
+                logger.error("Unable to get announcements for {service} {user_id} | {code} | All retries failed.".format(code=code,**post['post_variables']))
             return
         if not len(response.json()):
             logger.info("No announcements found for https://{site}/{service}/user/{user_id}".format(**post['post_variables']))
